@@ -1,0 +1,251 @@
+#!/usr/bin/python
+
+# Copyright 2014 Ben Spinelli
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+import sys
+import os
+import functools
+import time
+
+####################################################
+# Functions to make temp copy of script
+####################################################
+
+def parseAndCopy(oldFile, newFile):
+    #Parses a file to add analysis decorators to a copy of the code.
+    oldFilePointer = open(oldFile, 'r')
+    newFilePointer = open(newFile, 'w')
+
+    #Doc-strings might cause false positives, so we will keep track of them
+    ignoreNextLine = False
+
+    for line in oldFilePointer:
+        #Add the @analyze decorator if line is a function declaration
+        defPos = line.find("def ")
+        if defPos >= 0 and isWhitespace(line[0:defPos]) and not ignoreNextLine:
+            newFilePointer.write(" " * defPos + "@analyze\n")
+        
+        #Write original line to new file
+        newFilePointer.write(line)
+        
+        #Check to see if we will ignore the next line
+        if line.count("\"\"\"") % 2 == 1:
+            ignoreNextLine = not ignoreNextLine
+
+def isWhitespace(string):
+    #Returns true iff each character is either a tab or space.
+    for char in string:
+        if not (char == " ") or (char == "\t"):
+            return False
+    return True
+
+####################################################
+# Function to analyze script
+####################################################
+
+class Call(object):
+    #A class to hold important data for each function call
+    def __init__(self, f, args, caller, sysTime):
+        self.name = f.func_name
+        self.args = args
+        self.caller = caller #caller is index of calling instance
+        self.time = sysTime
+        self.timeEnd = None
+        self.selfTimes = [sysTime]
+        self.active = True
+
+    def __repr__(self):
+        return ("Call(" + self.name + ", " + str(self.args) + ", " +
+                str(self.caller) + ", " + str(self.time) + ")")
+
+    def __str__(self):                                                           
+        return (self.name + str(self.args) +                                     
+                ("  -  %2fs" % (self.timeEnd - self.time)) +                     
+                ("  %2fs" % pairDiffSum(self.selfTimes)))
+
+    def calculateCallDepth(self):
+        if self.caller == None:
+            self.callDepth = 0
+        else:
+            self.callDepth = callList[self.caller].callDepth + 1
+        
+def listCalls(callList, out):
+    for call in callList:
+        call.calculateCallDepth()
+        write(". " * (call.callDepth) + str(call), out)
+
+def findCallingFunction(callList):
+    #Finds the calling function by looking for the most-recently called
+    #function that is still active. Returns the index of this instance.
+    for index in xrange(len(callList) - 1, -1, -1):
+        if callList[index].active == True:
+            return index
+    #No caller (e.g., main function) returns None
+    return None
+
+def analyze(f):
+    #Tell python to use the @analyze decorator to "wrap" functions
+    @functools.wraps(f)
+
+    def wrapper(*args):
+        #Note the calls' index and calculate its caller
+        index = len(callList)
+        callerIndex = findCallingFunction(callList)
+        if callerIndex != None:
+            callList[callerIndex].selfTimes.append(time.time())
+        
+        #Log the function call for future analysis and actually call f
+        callList.append( Call(f, args, callerIndex, time.time()) )
+        fReturn =  f(*args)
+        
+        #Now that f has returned, set the active flag to False
+        curTime = time.time()
+        callList[index].timeEnd = curTime
+        callList[index].selfTimes.append(curTime)
+        if callerIndex != None:
+            callList[callerIndex].selfTimes.append(curTime)
+        callList[index].active = False
+        return fReturn
+
+    return wrapper
+
+####################################################
+# Functions to print results
+####################################################
+
+def write(string, out):
+    if out == None:
+        print(string)
+    else:
+        out.write(string)
+        out.write("\n")
+
+def pairDiffSum(times):
+    #Takes a list of times and sums the difference of times[1] and times[0],
+    #times[3] and times[2], etc.
+    return sum([times[i+1] - times[i] for i in range(0, len(times), 2)])
+
+def calculateSimpleStats(callList):
+    #Create stats dictionary and dictionary for each function
+    stats = {}
+    stats["Py_totTime"] = 0
+    for call in callList:
+        if not call.name in stats:
+            stats[call.name] = {}
+            stats[call.name]["perTime"] = 0
+            stats[call.name]["totTime"] = 0
+            stats[call.name]["slfTime"] = 0
+            stats[call.name]["calls"] = 0
+            stats[call.name]["slfTimePerCall"] = 0
+            stats[call.name]["totTimePerCall"] = 0
+
+        #Add current calls stats to functions total
+        stats[call.name]["totTime"] += call.timeEnd - call.time
+        stats[call.name]["slfTime"] += pairDiffSum(call.selfTimes)
+        stats[call.name]["calls"] += 1
+    stats["Py_totTime"] = stats["main"]["totTime"]
+
+    for f in stats:
+        if not f == "Py_totTime":
+            stats[f]["perTime"] = 100*stats[f]["slfTime"] / stats["Py_totTime"]
+            stats[f]["slfTimePerCall"] = stats[f]["slfTime"] / stats[f]["calls"]
+            stats[f]["totTimePerCall"] = stats[f]["totTime"] / stats[f]["calls"]
+    return stats
+        
+def printSimple(f, stats, out):
+    #Prints simple output for function f
+    write(" %5.2f %8.2f %8.2f %10d %8.2f %8.2f  %s" % (stats[f]["perTime"], 
+          stats[f]["totTime"], stats[f]["slfTime"], stats[f]["calls"], 
+          1000 * stats[f]["slfTimePerCall"], stats[f]["totTimePerCall"], 
+          f if len(f) < 25 else f[:25]), out)
+
+def printSimpleProfile(callList, out):
+    write("Simple profile - %s:" % argv[1], out)
+    write("", out)
+    write("     %    total     self                self    total", out)
+    write("  time  seconds  seconds      calls  ms/call   s/call  name", out)
+    stats = calculateSimpleStats(callList)
+    
+    def cmp(a, b):
+        if (a == "Py_totTime" or b == "Py_totTime" or 
+            stats[a]["perTime"] == stats[b]["perTime"]):
+            return 0
+        if stats[a]["perTime"] > stats[b]["perTime"]:
+            return -1
+        else:
+            return 1
+    
+    for f in sorted(list(stats), cmp):
+        if not f == "Py_totTime":
+            printSimple(f, stats, out)
+
+    if "-v" in argv:                                                             
+        write("\nCall Trace:\n", out)                                                 
+        listCalls(callList, out) 
+
+####################################################
+# main
+####################################################
+
+def main():
+    global argv
+    argv = sys.argv
+
+    if len(argv) < 2:
+        print("Usage: %s program.py [-o output][-v][-k]" % argv[0])
+        print("Use -h for help")
+        return 1
+
+    #Print the help file
+    if "-h" in argv:
+        print("pprof is a subset of gprof functionality for Python programs.\n"+
+              ("Usage: %s program.py [-o output][-v][-k]\n\n" % argv[0]) +
+              "-o output: write the output to a file named \"output\"\n" +
+              "-k: keep the temporary file with the @analyze decorators\n" +
+              "-v: verbose, includes call trace with timings for each call")
+        return 0
+    
+    #Keep a global list of all calls
+    global callList
+    callList = []
+   
+    #Make the temp file with analyze decorators
+    parseAndCopy(argv[1], argv[1] + ".prof")
+    
+    #Execute the file and remove temp file
+    varDict = {"analyze" : analyze}
+    execfile("%s.prof" % argv[1], varDict, varDict)
+    if "main" in varDict:
+        varDict["main"]()
+    else:
+        print("Files without main() not yet supported")
+    if not "-k" in argv:
+        os.system("rm %s.prof" % argv[1])
+    
+    #Print output
+    if "-o" in argv:
+        outputFile = open(argv[argv.index("-o") + 1], 'w')
+    else:
+        outputFile = None
+
+    printSimpleProfile(callList, outputFile)
+    if "-o" in argv:
+        outputFile.close()
+
+    return 0
+
+if __name__ == "__main__":
+    main()
