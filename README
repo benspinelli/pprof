@@ -1,0 +1,62 @@
+pprof - a subset of gprof functionality for Python programs.
+
+Synopsis:
+    ./pprof program.py [-o output][-v][-k]
+    ./pprof_Python2 program.py [-o output][-v][-k]
+
+Overview:
+    pprof if a profiler for Python programs that counts the number of calls to
+    each function within a program and records the time spent in each. It also
+    provides a verbose output option that adds a trace of every individual
+    function call and it's timing.
+
+    pprof has two versions, pprof and pprof_Python2. The only difference between
+    these is that pprof_Python2 is executed by and used to profile Python 2
+    programs while pprof is executed by and used to profile Python 3. All output
+    is the same, and the act equivalently on any code that is valid in both
+    Python 2 and 3.
+
+    The default output for pprof is presented in seven columns:
+
+    "name"
+        the name of the function profiled by this row
+
+    "% time"
+        the percent of total execution time spent in this function and not in
+        a subcall to a different function
+
+    "total seconds"
+        the total number of seconds spent in this function, including time spent
+        in subcalls made by the function
+
+    "self seconds"
+        the number of seconds spent in this function not including time spent
+        in subcalls
+
+    "calls"
+        the number of calls made to this function
+
+    "self ms/call"
+        self seconds divided by calls, converted to milliseconds
+
+    "total s/call"
+        total seconds divided by calls
+
+Options:
+    "-o output"
+        Write the output to a file named "output". By default, all output is
+        printed to stdout.
+
+    "-v"
+        Print verbose output. This includes a call trace that shows the call
+        tree for the entire excecution as well as timings for every individual
+        function call. Each row is presented as:
+            function_name(function_arguments) - total_time self_time
+        with each child indented one level more than its parent.
+
+    "-k"
+        Keep the temporary file that includes the @analyze decorators. For
+        "program.py", this file will be named "program.py.prof". This can be
+        used if you want to make manual modifications to turn off the analysis
+        of individual functions. To see the output of this modification, load
+        pprof with pythons -i flag and run it's functions on this file directly.
